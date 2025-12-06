@@ -1,0 +1,18 @@
+[package]
+name = "mirage-wm"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+smithay = { version = "0.7", default-features = false, features = [
+    "backend_winit",
+    "renderer_gl",
+    "wayland_frontend",
+] }
+
+calloop = "0.14"
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+anyhow = "1"
