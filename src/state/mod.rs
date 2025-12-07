@@ -5,7 +5,7 @@ use smithay::{
         shell::xdg::{XdgShellHandler, XdgShellState, ToplevelSurface},
         output::OutputHandler,
     },
-    input::SeatHandler,
+    input::{SeatHandler, SeatState, pointer::PointerHandle, keyboard::KeyboardHandle},
     output::Output,
     utils::{Point, Logical},
 };
@@ -19,12 +19,16 @@ pub struct MirageState {
     pub pointer_pos: Point<f64, Logical>,
     pub focused_window: Option<usize>,
     pub layout: TilingLayout,
+    pub seat_state: SeatState<Self>,
+    pub pointer: Option<PointerHandle<Self>>,
+    pub keyboard: Option<KeyboardHandle<Self>>,
 }
 
 impl MirageState {
     pub fn new(display_handle: &DisplayHandle) -> Self {
         let compositor = CompositorState::new::<Self>(display_handle);
         let xdg_shell = XdgShellState::new::<Self>(display_handle);
+        let seat_state = SeatState::new();
 
         Self { 
             compositor, 
@@ -33,8 +37,21 @@ impl MirageState {
             windows: Vec::new(),
             pointer_pos: Point::from((0.0, 0.0)),
             focused_window: None,
-            layout: TilingLayout::new(1280, 800), // Default size, will be updated
+            layout: TilingLayout::new(1280, 800),
+            seat_state,
+            pointer: None,
+            keyboard: None,
         }
+    }
+
+    pub fn initialize_seat(&mut self, display_handle: &DisplayHandle) {
+        let mut seat = self.seat_state.new_wl_seat(display_handle, "default");
+
+        // Add pointer device
+        self.pointer = Some(seat.add_pointer());
+
+        // Add keyboard device
+        self.keyboard = seat.add_keyboard(Default::default(), 200, 200).ok();
     }
 
     /// Find which window index is at the given position
@@ -139,8 +156,8 @@ impl SeatHandler for MirageState {
     type PointerFocus = WlSurface;
     type TouchFocus = WlSurface;
 
-    fn seat_state(&mut self) -> &mut smithay::input::SeatState<Self> {
-        todo!()
+    fn seat_state(&mut self) -> &mut SeatState<Self> {
+        &mut self.seat_state
     }
 }
 
