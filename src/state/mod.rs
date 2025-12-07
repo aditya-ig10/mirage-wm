@@ -4,6 +4,7 @@ use smithay::{
         compositor::{CompositorState, CompositorHandler},
         shell::xdg::{XdgShellHandler, XdgShellState, ToplevelSurface},
         output::OutputHandler,
+        buffer::BufferHandler,
     },
     input::{SeatHandler, SeatState, pointer::PointerHandle, keyboard::KeyboardHandle},
     output::Output,
@@ -158,6 +159,12 @@ impl SeatHandler for MirageState {
 
     fn seat_state(&mut self) -> &mut SeatState<Self> {
         &mut self.seat_state
+    }
+}
+
+impl BufferHandler for MirageState {
+    fn buffer_destroyed(&mut self, _buffer: &smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer) {
+        // Buffer was destroyed - no action needed for now
     }
 }
 

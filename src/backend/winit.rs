@@ -2,7 +2,15 @@ use std::time::Duration;
 
 use smithay::{
     backend::winit::{self, WinitEvent},
-    backend::renderer::gles::GlesRenderer,
+    backend::renderer::{
+        gles::GlesRenderer,
+        element::{
+            surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
+            Kind,
+        },
+        utils::draw_render_elements,
+        Color32F,
+    },
     reexports::{
         calloop::EventLoop,
         winit::platform::pump_events::PumpStatus,
@@ -189,44 +197,72 @@ fn render_frame(
     backend: &mut smithay::backend::winit::WinitGraphicsBackend<GlesRenderer>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use smithay::utils::{Rectangle, Transform};
-    use smithay::backend::renderer::{Renderer, Color32F, Frame};
+    use smithay::backend::renderer::{Renderer, Frame};
     
     let size = backend.window_size();
-    
-    // Collect damage regions  
     let mut damage_rects = Vec::new();
     
-    // Bind renderer and framebuffer target, then immediately create frame
+    // First, collect all render elements BEFORE creating the frame
+    // We need to bind renderer, but NOT create frame yet
+    let all_elements = {
+        let (renderer, _) = backend.bind()?;
+        
+        let mut all_window_elements = Vec::new();
+        
+        // Collect render elements for each window
+        for (idx, window) in state.windows.iter().enumerate() {
+            let geom = state.layout.calculate_geometry(idx, state.windows.len());
+            let location = (geom.location.x, geom.location.y);
+            
+            let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = 
+                render_elements_from_surface_tree(
+                    renderer,
+                    window.wl_surface(),
+                    location,
+                    1.0, // scale
+                    1.0, // alpha
+                    Kind::Unspecified,
+                );
+            
+            all_window_elements.push((idx, geom, elements));
+        }
+        
+        all_window_elements
+    };
+    
+    // Now bind again and render
     {
         let (renderer, mut target) = backend.bind()?;
         let mut frame = renderer.render(&mut target, size, Transform::Normal)?;
         
-        // Clear to background color (dark gray) - full screen
+        // Clear to background color (dark gray)
         let screen_rect = Rectangle::from_loc_and_size((0, 0), (size.w, size.h));
         frame.clear(Color32F::new(0.15, 0.15, 0.15, 1.0), &[screen_rect])?;
         
-        // Render each window as a colored rectangle
-        for (idx, _window) in state.windows.iter().enumerate() {
-            let geom = state.layout.calculate_geometry(idx, state.windows.len());
-            
-            // Choose color based on focus
-            let color = if Some(idx) == state.focused_window {
-                Color32F::new(0.2, 0.5, 0.9, 1.0) // Blue for focused
-            } else {
-                Color32F::new(0.3, 0.3, 0.3, 1.0) // Dark gray for unfocused
-            };
-            
-            // Draw the window rectangle
+        // Render each window's collected elements
+        for (idx, geom, elements) in all_elements {
             let window_rect = Rectangle::from_loc_and_size(
                 (geom.location.x, geom.location.y),
                 (geom.size.w, geom.size.h),
             );
             
-            frame.draw_solid(window_rect, &[window_rect], color)?;
-            damage_rects.push(window_rect);
-            
-            info!("Rendering window {} at ({},{}) size({}x{})", 
-                  idx, geom.location.x, geom.location.y, geom.size.w, geom.size.h);
+            // Draw elements if any exist
+            if !elements.is_empty() {
+                draw_render_elements(&mut frame, 1.0, &elements, &[window_rect])?;
+                damage_rects.push(window_rect);
+                info!("Rendered window {} with surfaces at ({},{}) size({}x{})", 
+                      idx, geom.location.x, geom.location.y, geom.size.w, geom.size.h);
+            } else {
+                // Fallback: draw colored rectangle if no surface content
+                let color = if Some(idx) == state.focused_window {
+                    Color32F::new(0.2, 0.5, 0.9, 1.0) // Blue for focused
+                } else {
+                    Color32F::new(0.3, 0.3, 0.3, 1.0) // Dark gray for unfocused
+                };
+                
+                frame.draw_solid(window_rect, &[window_rect], color)?;
+                damage_rects.push(window_rect);
+            }
         }
         
         // Render cursor as a small white square
@@ -247,7 +283,7 @@ fn render_frame(
             damage_rects.push(cursor_rect);
         }
         
-        // Finish frame rendering (must happen before backend.submit)
+        // Finish frame rendering
         frame.finish()?;
     }
     
