@@ -6,13 +6,12 @@ edition = "2021"
 [dependencies]
 smithay = { version = "0.7", default-features = false, features = [
     "backend_winit",
+    "desktop",
     "renderer_gl",
-    "wayland_frontend",
+    "wayland_frontend"
 ] }
 
 calloop = "0.14"
-
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
 anyhow = "1"
