@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Mirage-WM
+Comment=Mirage-WM Wayland Compositor (Standalone)
+Exec=/home/aditya/Projects/mirage-wm/mirage-wm-session.sh
+Type=Application
+X-GDM-SessionType=wayland
+DesktopNames=MirageWM
+Icon=mirage
+Categories=System;

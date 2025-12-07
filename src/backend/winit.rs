@@ -1,4 +1,5 @@
 use std::time::Duration;
+use std::sync::Arc;
 
 use smithay::{
     backend::winit::{self, WinitEvent},
@@ -14,13 +15,14 @@ use smithay::{
     reexports::{
         calloop::EventLoop,
         winit::platform::pump_events::PumpStatus,
+        wayland_server::ListeningSocket,
     },
     output::{Mode, Output, PhysicalProperties, Subpixel},
     utils::Transform,
 };
 use tracing::{error, info};
 
-use crate::state::MirageState;
+use crate::state::{MirageState, ClientState};
 
 pub const OUTPUT_NAME: &str = "winit";
 
@@ -63,6 +65,24 @@ pub fn run_winit_backend<S: 'static>() {
     let mut state = MirageState::new(&display_handle);
     state.output = Some(output.clone());
     state.initialize_seat(&display_handle);
+
+    // Create a listening socket for Wayland clients
+    let socket_name = "mirage-0";
+    let listener = match ListeningSocket::bind(socket_name) {
+        Ok(listener) => {
+            info!("Created Wayland socket: {}", socket_name);
+            listener
+        }
+        Err(err) => {
+            error!("Failed to create Wayland socket: {}", err);
+            return;
+        }
+    };
+    
+    // Set the WAYLAND_DISPLAY environment variable so clients can connect
+    std::env::set_var("WAYLAND_DISPLAY", socket_name);
+    
+    let mut clients = Vec::new();
 
     info!("Initialization completed, starting the main loop.");
     info!("Mirage Compositor running at {}x{}", size.w, size.h);
@@ -175,6 +195,19 @@ pub fn run_winit_backend<S: 'static>() {
             break;
         }
 
+        // Accept new client connections
+        if let Ok(Some(stream)) = listener.accept() {
+            info!("New client connected");
+            match display_handle.insert_client(stream, Arc::new(ClientState::default())) {
+                Ok(client) => {
+                    clients.push(client);
+                }
+                Err(err) => {
+                    error!("Failed to add client: {}", err);
+                }
+            }
+        }
+
         // Render a frame
         if let Err(err) = render_frame(&state, &mut backend) {
             error!("Rendering error: {}", err);
@@ -237,14 +270,14 @@ fn render_frame(
         
         // Clear to background color (dark gray)
         let screen_rect = Rectangle::from_loc_and_size((0, 0), (size.w, size.h));
-        frame.clear(Color32F::new(0.15, 0.15, 0.15, 1.0), &[screen_rect])?;
+        // Use slightly lighter color so we can see something
+        frame.clear(Color32F::new(0.25, 0.25, 0.25, 1.0), &[screen_rect])?;
+        info!("Rendering frame at {}x{}, {} windows, {} decorations", 
+              size.w, size.h, state.windows.len(), state.decorations.len());
         
-        // Render each window's collected elements
+        // Render each window's collected elements with decorations
         for (idx, geom, elements) in all_elements {
-            let window_rect = Rectangle::from_loc_and_size(
-                (geom.location.x, geom.location.y),
-                (geom.size.w, geom.size.h),
-            );
+            let window_rect = Rectangle::from_loc_and_size((geom.location.x, geom.location.y), (geom.size.w, geom.size.h));
             
             // Draw elements if any exist
             if !elements.is_empty() {
@@ -263,7 +296,73 @@ fn render_frame(
                 frame.draw_solid(window_rect, &[window_rect], color)?;
                 damage_rects.push(window_rect);
             }
+            
+            // Draw window decorations (title bar and buttons)
+            if idx < state.decorations.len() {
+                let _decoration = &state.decorations[idx];
+                let is_focused = Some(idx) == state.focused_window;
+                
+                // Draw title bar
+                let title_bar_rect = Rectangle::from_loc_and_size(
+                    (geom.location.x, geom.location.y),
+                    (geom.size.w, 32),
+                );
+                
+                let title_bar_color = if is_focused {
+                    Color32F::new(0.3, 0.3, 0.3, 1.0) // Dark gray for focused
+                } else {
+                    Color32F::new(0.2, 0.2, 0.2, 1.0) // Darker gray for unfocused
+                };
+                
+                frame.draw_solid(title_bar_rect, &[title_bar_rect], title_bar_color)?;
+                damage_rects.push(title_bar_rect);
+                
+                // Draw close button (red)
+                let close_btn_rect = Rectangle::from_loc_and_size(
+                    (geom.location.x + geom.size.w - 32, geom.location.y + 6),
+                    (20, 20),
+                );
+                frame.draw_solid(close_btn_rect, &[close_btn_rect], Color32F::new(0.9, 0.2, 0.2, 1.0))?;
+                damage_rects.push(close_btn_rect);
+                
+                // Draw minimize button (yellow)
+                let minimize_btn_rect = Rectangle::from_loc_and_size(
+                    (geom.location.x + geom.size.w - 62, geom.location.y + 6),
+                    (20, 20),
+                );
+                frame.draw_solid(minimize_btn_rect, &[minimize_btn_rect], Color32F::new(0.9, 0.8, 0.2, 1.0))?;
+                damage_rects.push(minimize_btn_rect);
+                
+                // Draw maximize button (green)
+                let maximize_btn_rect = Rectangle::from_loc_and_size(
+                    (geom.location.x + geom.size.w - 92, geom.location.y + 6),
+                    (20, 20),
+                );
+                frame.draw_solid(maximize_btn_rect, &[maximize_btn_rect], Color32F::new(0.2, 0.9, 0.2, 1.0))?;
+                damage_rects.push(maximize_btn_rect);
+            }
         }
+        
+        // If no windows, draw a test indicator to show compositor is working
+        if state.windows.is_empty() {
+            let test_rect = Rectangle::from_loc_and_size(
+                (size.w / 2 - 100, size.h / 2 - 50),
+                (200, 100),
+            );
+            frame.draw_solid(test_rect, &[test_rect], Color32F::new(0.2, 0.5, 0.8, 1.0))?;
+            damage_rects.push(test_rect);
+            info!("No windows open - rendering test indicator");
+        }
+        
+        // Render dock background at the bottom
+        let dock_height = state.dock.background_height;
+        let dock_y = size.h - state.dock.position_bottom - dock_height;
+        let dock_rect = Rectangle::from_loc_and_size((0, dock_y), (size.w, dock_height));
+        frame.draw_solid(dock_rect, &[dock_rect], Color32F::new(0.15, 0.15, 0.15, 0.9))?;
+        damage_rects.push(dock_rect);
+        
+        // TODO: Render dock apps icons here
+        // Currently skipping individual app icons - dock background visible
         
         // Render cursor as a small white square
         let cursor_x = state.pointer_pos.x as i32;
@@ -284,7 +383,7 @@ fn render_frame(
         }
         
         // Finish frame rendering
-        frame.finish()?;
+        let _ = frame.finish();
     }
     
     // Submit the frame for display with damage information
